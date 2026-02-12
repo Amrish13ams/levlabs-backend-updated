@@ -6,6 +6,9 @@ import boto3
 from werkzeug.utils import secure_filename
 import json
 from urllib.parse import urlparse
+from dotenv import load_dotenv
+
+load_dotenv() # Load environment variables from .env file
 
 app = Flask(__name__)
 CORS(app)
@@ -186,4 +189,4 @@ def get_group_fabrics(id):
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    app.run(debug=True)
+    app.run(debug=True)  
