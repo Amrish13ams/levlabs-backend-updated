@@ -32,6 +32,9 @@ class Fabric(db.Model):
     # Foreign Key to FabricGroup
     fabric_group_id = db.Column(db.Integer, db.ForeignKey('fabric_groups.id'), nullable=False)
 
+    # Relationship: Images of products using this fabric
+    product_images = db.relationship('ProductFabricImage', backref='fabric', cascade="all, delete-orphan", lazy=True)
+
 
 class Product(db.Model):
     """
@@ -69,6 +72,9 @@ class Product(db.Model):
         cascade="all, delete-orphan"
     )
 
+    # Relationship: Images specific to a fabric for this product
+    fabric_images = db.relationship('ProductFabricImage', backref='product', cascade="all, delete-orphan", lazy=True)
+
     def to_dict(self):
         """Helper method to convert model instance to dictionary for JSON responses"""
         return {
@@ -83,3 +89,16 @@ class Product(db.Model):
             "fabric_group_id": self.fabric_group_id,
             "attribute_name": self.attribute_name
         }
+
+class ProductFabricImage(db.Model):
+    """
+    Links a specific Product and a specific Fabric to an image.
+    Example: 'Suit Jacket' in 'Blue Wool' looks like 'blue_suit.jpg'.
+    """
+    __tablename__ = 'product_fabric_images'
+    __table_args__ = (db.UniqueConstraint('product_id', 'fabric_id', name='_product_fabric_uc'),)
+    
+    id = db.Column(db.Integer, primary_key=True)
+    product_id = db.Column(db.Integer, db.ForeignKey('products.id', ondelete='CASCADE'), nullable=False)
+    fabric_id = db.Column(db.Integer, db.ForeignKey('fabrics.id', ondelete='CASCADE'), nullable=False)
+    image_url = db.Column(db.String(500), nullable=False)

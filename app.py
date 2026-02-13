@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from models import db, Product, Fabric, FabricGroup
+from models import db, Product, Fabric, FabricGroup, ProductFabricImage
 import os
 import boto3
 from werkzeug.utils import secure_filename
@@ -44,6 +44,15 @@ def upload_file(file):
         print(f"S3 Upload Error: {e}")
         return None
 
+@app.route('/upload', methods=['POST'])
+def upload_endpoint():
+    if 'image' not in request.files:
+        return jsonify({"error": "No image provided"}), 400
+    url = upload_file(request.files['image'])
+    if url:
+        return jsonify({"url": url}), 200
+    return jsonify({"error": "Upload failed"}), 500
+
 def get_presigned_url(file_url):
     if not file_url:
         return None
@@ -85,6 +94,30 @@ def add_fabric():
     db.session.add(fabric)
     db.session.commit()
     return jsonify({"id": fabric.id, "status": "created"}), 201
+
+# --- PRODUCT FABRIC IMAGE CRUD ---
+@app.route('/product-fabric-images', methods=['POST'])
+def add_product_fabric_image():
+    data = request.form if request.form else request.json
+    product_id = data.get('product_id')
+    fabric_id = data.get('fabric_id')
+    image_url = data.get('image_url')
+    
+    if 'image' in request.files:
+        url = upload_file(request.files['image'])
+        if url:
+            image_url = url
+            
+    # Update existing or create new
+    pfi = ProductFabricImage.query.filter_by(product_id=product_id, fabric_id=fabric_id).first()
+    if not pfi:
+        pfi = ProductFabricImage(product_id=product_id, fabric_id=fabric_id, image_url=image_url)
+        db.session.add(pfi)
+    else:
+        pfi.image_url = image_url
+    
+    db.session.commit()
+    return jsonify({"id": pfi.id, "status": "saved", "image_url": pfi.image_url}), 201
 
 # --- PRODUCT CRUD ---
 @app.route('/products', methods=['POST'])
@@ -166,6 +199,12 @@ def get_tree():
         if p.fabric_group:
             node["fabrics"] = [{"id": f.id, "name": f.name, "image_urls": get_presigned_url(f.image_urls)} for f in p.fabric_group.fabrics]
 
+        # Include fabric-specific images for this product
+        node["fabric_images"] = {
+            img.fabric_id: get_presigned_url(img.image_url) 
+            for img in p.fabric_images
+        }
+
         sub_products = []
         for child in p.sub_products:
             child_node = build_node(child)
@@ -180,6 +219,82 @@ def get_tree():
 
     roots = Product.query.filter_by(parent_id=None).all()
     return jsonify([build_node(r) for r in roots])
+
+@app.route('/products/tree', methods=['PUT'])
+def update_product_tree():
+    data = request.json
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+        
+    if isinstance(data, dict):
+        data = [data]
+
+    def update_recursive(node, parent_id=None):
+        # Determine ID
+        p_id = node.get('id')
+        product = None
+        if p_id:
+            product = Product.query.get(p_id)
+        
+        if not product:
+            product = Product()
+            db.session.add(product)
+        
+        # Update direct fields
+        fields = ['name', 'description', 'price', 'meta_type', 'attribute_name', 'fabric_group_id', 'image_urls']
+        for field in fields:
+            if field in node:
+                setattr(product, field, node[field])
+        
+        # Handle attributes list
+        if 'attributes' in node:
+            product.attributes_list = node['attributes']
+        elif 'attributes_list' in node:
+            product.attributes_list = node['attributes_list']
+            
+        product.parent_id = parent_id
+        db.session.flush() # Generate ID for new records
+
+        # Update fabric-specific images
+        if 'fabric_images' in node and isinstance(node['fabric_images'], dict):
+            for fab_id, img_url in node['fabric_images'].items():
+                if img_url:
+                    pfi = ProductFabricImage.query.filter_by(product_id=product.id, fabric_id=int(fab_id)).first()
+                    if pfi:
+                        pfi.image_url = img_url
+                    else:
+                        pfi = ProductFabricImage(product_id=product.id, fabric_id=int(fab_id), image_url=img_url)
+                        db.session.add(pfi)
+
+        # Gather children from 'sub_products' and dynamic attribute keys
+        children = []
+        if 'sub_products' in node and isinstance(node['sub_products'], list):
+            children.extend(node['sub_products'])
+            
+        # Check dynamic attribute keys based on the product's attributes
+        attrs = product.attributes_list
+        if isinstance(attrs, str):
+            try: attrs = json.loads(attrs)
+            except: attrs = []
+            
+        if attrs and isinstance(attrs, list):
+            for attr in attrs:
+                if attr in node and isinstance(node[attr], list):
+                    children.extend(node[attr])
+        
+        # Recurse
+        for child in children:
+            update_recursive(child, product.id)
+
+    try:
+        for root in data:
+            update_recursive(root, None)
+        db.session.commit()
+        return jsonify({"status": "updated"}), 200
+    except Exception as e:
+        db.session.rollback()
+        print(e)
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/fabric-groups/<int:id>/fabrics', methods=['GET'])
 def get_group_fabrics(id):
