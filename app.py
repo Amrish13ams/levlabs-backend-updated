@@ -7,44 +7,35 @@ from werkzeug.utils import secure_filename
 import json
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+from sqlalchemy.orm import joinedload
 
 load_dotenv() # Load environment variables from .env file
 
 app = Flask(__name__)
 CORS(app)
-database_url = os.environ.get('DATABASE_URL', 'sqlite:///local.db')
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url.replace("postgres://", "postgresql://")
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///local.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
-
-# --- DB INIT (Production Safe) ---
-with app.app_context():
-    try:
-        db.create_all()
-        print("Database tables verified/created.")
-    except Exception as e:
-        print(f"WARNING: Database initialization failed on startup: {e}")
 
 # --- S3 CONFIGURATION ---
 s3 = None
 aws_access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+aws_secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
 aws_endpoint = os.environ.get("AWS_ENDPOINT_URL")
 
-# Only initialize S3 if credentials are provided and not placeholders
 if aws_access_key and "your_access_key" not in aws_access_key:
-    # Handle placeholder or empty endpoint
-    if not aws_endpoint or "your_endpoint_url" in aws_endpoint:
-        aws_endpoint = None  # Use default AWS endpoint if placeholder
+    if aws_endpoint and "your_endpoint_url" in aws_endpoint:
+        aws_endpoint = None
 
     try:
         s3 = boto3.client(
             "s3",
             aws_access_key_id=aws_access_key,
-            aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            aws_secret_access_key=aws_secret_key,
             endpoint_url=aws_endpoint
         )
     except Exception as e:
-        print(f"WARNING: S3 Client init failed: {e}")
+        print(f"S3 Init Failed: {e}")
 
 BUCKET_NAME = os.environ.get("AWS_BUCKET_NAME")
 
@@ -67,19 +58,6 @@ def upload_file(file):
         print(f"S3 Upload Error: {e}")
         return None
 
-# --- SYSTEM ENDPOINTS ---
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "healthy"}), 200
-
-@app.route('/init-db', methods=['GET'])
-def init_db():
-    try:
-        db.create_all()
-        return jsonify({"status": "Database tables created successfully"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 @app.route('/upload', methods=['POST'])
 def upload_endpoint():
     if 'image' not in request.files:
@@ -92,6 +70,8 @@ def upload_endpoint():
 def get_presigned_url(file_url):
     if not file_url:
         return None
+    if not s3:
+        return file_url
     try:
         # Extract the filename (key) from the stored URL
         path = urlparse(file_url).path
@@ -101,7 +81,8 @@ def get_presigned_url(file_url):
             Params={'Bucket': BUCKET_NAME, 'Key': filename},
             ExpiresIn=3600 # URL valid for 1 hour
         )
-    except Exception:
+    except Exception as e:
+        print(f"Presign Error: {e}")
         return file_url
 
 # --- FABRIC GROUP CRUD ---
@@ -213,40 +194,58 @@ def update_delete_product(id):
 
 @app.route('/products/tree', methods=['GET'])
 def get_tree():
-    try:
-        def build_node(p):
-            node = {
-                "id": p.id, "name": p.name, "meta_type": p.meta_type,
-                "attributes": p.attributes_list or [], "fabric_group_id": p.fabric_group_id,
-                "price": p.price
-            }
+    # Optimization: Fetch all data in bulk to avoid N+1 queries and recursion limits
+    products = Product.query.options(
+        joinedload(Product.fabric_group).joinedload(FabricGroup.fabrics)
+    ).all()
+    
+    all_fabric_images = ProductFabricImage.query.all()
+    
+    # Map fabric images by product_id
+    fabric_images_map = {}
+    for img in all_fabric_images:
+        if img.product_id not in fabric_images_map:
+            fabric_images_map[img.product_id] = {}
+        fabric_images_map[img.product_id][img.fabric_id] = get_presigned_url(img.image_url)
+
+    # Create node dictionary
+    nodes_map = {}
+    for p in products:
+        node = {
+            "id": p.id,
+            "name": p.name,
+            "meta_type": p.meta_type,
+            "attributes": p.attributes_list or [],
+            "fabric_group_id": p.fabric_group_id,
+            "price": p.price,
+            "sub_products": [],
+            "fabric_images": fabric_images_map.get(p.id, {})
+        }
+        
+        if p.fabric_group:
+            node["fabrics"] = [
+                {"id": f.id, "name": f.name, "image_urls": get_presigned_url(f.image_urls)} 
+                for f in p.fabric_group.fabrics
+            ]
             
-            if p.fabric_group:
-                node["fabrics"] = [{"id": f.id, "name": f.name, "image_urls": get_presigned_url(f.image_urls)} for f in p.fabric_group.fabrics]
+        nodes_map[p.id] = node
 
-            # Include fabric-specific images for this product
-            node["fabric_images"] = {
-                img.fabric_id: get_presigned_url(img.image_url) 
-                for img in p.fabric_images
-            }
+    # Build Tree Structure
+    roots = []
+    for p in products:
+        node = nodes_map[p.id]
+        if p.parent_id and p.parent_id in nodes_map:
+            parent = nodes_map[p.parent_id]
+            if p.attribute_name:
+                if p.attribute_name not in parent:
+                    parent[p.attribute_name] = []
+                parent[p.attribute_name].append(node)
+            else:
+                parent["sub_products"].append(node)
+        elif p.parent_id is None:
+            roots.append(node)
 
-            sub_products = []
-            for child in p.sub_products:
-                child_node = build_node(child)
-                if child.attribute_name:
-                    if child.attribute_name not in node:
-                        node[child.attribute_name] = []
-                    node[child.attribute_name].append(child_node)
-                else:
-                    sub_products.append(child_node)
-            node["sub_products"] = sub_products
-            return node
-
-        roots = Product.query.filter_by(parent_id=None).all()
-        return jsonify([build_node(r) for r in roots])
-    except Exception as e:
-        print(f"Tree Error: {e}")
-        return jsonify({"error": str(e)}), 500
+    return jsonify(roots)
 
 @app.route('/products/tree', methods=['PUT'])
 def update_product_tree():
@@ -330,5 +329,6 @@ def get_group_fabrics(id):
     return jsonify([{"id": f.id, "name": f.name, "image_urls": get_presigned_url(f.image_urls)} for f in group.fabrics]) 
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(debug=True, host='0.0.0.0', port=port)
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True, host='0.0.0.0')  
