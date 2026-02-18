@@ -18,16 +18,26 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
 # --- S3 CONFIGURATION ---
-s3 = boto3.client(
-    "s3",
-    aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
-    endpoint_url=os.environ.get("AWS_ENDPOINT_URL")
-)
+s3 = None
+aws_access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+aws_endpoint = os.environ.get("AWS_ENDPOINT_URL")
+
+# Only initialize S3 if credentials are provided and not placeholders
+if aws_access_key and "your_access_key" not in aws_access_key:
+    if aws_endpoint and "your_endpoint_url" in aws_endpoint:
+        aws_endpoint = None  # Use default AWS endpoint if placeholder
+
+    s3 = boto3.client(
+        "s3",
+        aws_access_key_id=aws_access_key,
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        endpoint_url=aws_endpoint
+    )
+
 BUCKET_NAME = os.environ.get("AWS_BUCKET_NAME")
 
 def upload_file(file):
-    if not file or not BUCKET_NAME:
+    if not s3 or not file or not BUCKET_NAME or "your_bucket_name" in BUCKET_NAME:
         return None
     filename = secure_filename(file.filename)
     try:
@@ -44,6 +54,19 @@ def upload_file(file):
     except Exception as e:
         print(f"S3 Upload Error: {e}")
         return None
+
+# --- SYSTEM ENDPOINTS ---
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy"}), 200
+
+@app.route('/init-db', methods=['GET'])
+def init_db():
+    try:
+        db.create_all()
+        return jsonify({"status": "Database tables created successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/upload', methods=['POST'])
 def upload_endpoint():
@@ -178,36 +201,40 @@ def update_delete_product(id):
 
 @app.route('/products/tree', methods=['GET'])
 def get_tree():
-    def build_node(p):
-        node = {
-            "id": p.id, "name": p.name, "meta_type": p.meta_type,
-            "attributes": p.attributes_list or [], "fabric_group_id": p.fabric_group_id,
-            "price": p.price
-        }
-        
-        if p.fabric_group:
-            node["fabrics"] = [{"id": f.id, "name": f.name, "image_urls": get_presigned_url(f.image_urls)} for f in p.fabric_group.fabrics]
+    try:
+        def build_node(p):
+            node = {
+                "id": p.id, "name": p.name, "meta_type": p.meta_type,
+                "attributes": p.attributes_list or [], "fabric_group_id": p.fabric_group_id,
+                "price": p.price
+            }
+            
+            if p.fabric_group:
+                node["fabrics"] = [{"id": f.id, "name": f.name, "image_urls": get_presigned_url(f.image_urls)} for f in p.fabric_group.fabrics]
 
-        # Include fabric-specific images for this product
-        node["fabric_images"] = {
-            img.fabric_id: get_presigned_url(img.image_url) 
-            for img in p.fabric_images
-        }
+            # Include fabric-specific images for this product
+            node["fabric_images"] = {
+                img.fabric_id: get_presigned_url(img.image_url) 
+                for img in p.fabric_images
+            }
 
-        sub_products = []
-        for child in p.sub_products:
-            child_node = build_node(child)
-            if child.attribute_name:
-                if child.attribute_name not in node:
-                    node[child.attribute_name] = []
-                node[child.attribute_name].append(child_node)
-            else:
-                sub_products.append(child_node)
-        node["sub_products"] = sub_products
-        return node
+            sub_products = []
+            for child in p.sub_products:
+                child_node = build_node(child)
+                if child.attribute_name:
+                    if child.attribute_name not in node:
+                        node[child.attribute_name] = []
+                    node[child.attribute_name].append(child_node)
+                else:
+                    sub_products.append(child_node)
+            node["sub_products"] = sub_products
+            return node
 
-    roots = Product.query.filter_by(parent_id=None).all()
-    return jsonify([build_node(r) for r in roots])
+        roots = Product.query.filter_by(parent_id=None).all()
+        return jsonify([build_node(r) for r in roots])
+    except Exception as e:
+        print(f"Tree Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/products/tree', methods=['PUT'])
 def update_product_tree():
