@@ -17,6 +17,14 @@ app.config['SQLALCHEMY_DATABASE_URI'] = database_url.replace("postgres://", "pos
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
+# --- DB INIT (Production Safe) ---
+with app.app_context():
+    try:
+        db.create_all()
+        print("Database tables verified/created.")
+    except Exception as e:
+        print(f"WARNING: Database initialization failed on startup: {e}")
+
 # --- S3 CONFIGURATION ---
 s3 = None
 aws_access_key = os.environ.get("AWS_ACCESS_KEY_ID")
@@ -24,15 +32,19 @@ aws_endpoint = os.environ.get("AWS_ENDPOINT_URL")
 
 # Only initialize S3 if credentials are provided and not placeholders
 if aws_access_key and "your_access_key" not in aws_access_key:
-    if aws_endpoint and "your_endpoint_url" in aws_endpoint:
+    # Handle placeholder or empty endpoint
+    if not aws_endpoint or "your_endpoint_url" in aws_endpoint:
         aws_endpoint = None  # Use default AWS endpoint if placeholder
 
-    s3 = boto3.client(
-        "s3",
-        aws_access_key_id=aws_access_key,
-        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
-        endpoint_url=aws_endpoint
-    )
+    try:
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            endpoint_url=aws_endpoint
+        )
+    except Exception as e:
+        print(f"WARNING: S3 Client init failed: {e}")
 
 BUCKET_NAME = os.environ.get("AWS_BUCKET_NAME")
 
@@ -318,7 +330,5 @@ def get_group_fabrics(id):
     return jsonify([{"id": f.id, "name": f.name, "image_urls": get_presigned_url(f.image_urls)} for f in group.fabrics]) 
 
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=True, host='0.0.0.0', port=port)
