@@ -1,8 +1,5 @@
-__pycache__/
-*.py[cod]
-venv/
+__pycache__
+*.pyc
+.git
 .env
-.git/
-.gitignore
-docker-compose.yml
-Dockerfile
+local.db

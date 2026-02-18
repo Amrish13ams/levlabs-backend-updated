@@ -123,12 +123,6 @@ def add_product_fabric_image():
 @app.route('/products', methods=['POST'])
 def create_product():
     data = request.form if request.form else request.json
-    image_url = data.get('image_urls')
-
-    if 'image' in request.files:
-        url = upload_file(request.files['image'])
-        if url:
-            image_url = url
 
     attributes = data.get('attributes_list', [])
     if isinstance(attributes, str):
@@ -145,8 +139,7 @@ def create_product():
         attributes_list=attributes,
         fabric_group_id=data.get('fabric_group_id'),
         attribute_name=data.get('attribute_name'),
-        price=data.get('price', 0),
-        image_urls=image_url
+        price=data.get('price', 0)
     )
     db.session.add(product)
     db.session.commit()
@@ -169,12 +162,7 @@ def update_delete_product(id):
     
     data = request.form if request.form else request.json
     
-    if 'image' in request.files:
-        url = upload_file(request.files['image'])
-        if url:
-            product.image_urls = url
-
-    for key in ['name', 'description', 'parent_id', 'meta_type', 'attributes_list', 'fabric_group_id', 'attribute_name', 'price', 'image_urls']:
+    for key in ['name', 'description', 'parent_id', 'meta_type', 'attributes_list', 'fabric_group_id', 'attribute_name', 'price']:
         if key in data:
             val = data[key]
             if key == 'attributes_list' and isinstance(val, str):
@@ -193,7 +181,7 @@ def get_tree():
         node = {
             "id": p.id, "name": p.name, "meta_type": p.meta_type,
             "attributes": p.attributes_list or [], "fabric_group_id": p.fabric_group_id,
-            "price": p.price, "image_urls": get_presigned_url(p.image_urls)
+            "price": p.price
         }
         
         if p.fabric_group:
@@ -241,7 +229,7 @@ def update_product_tree():
             db.session.add(product)
         
         # Update direct fields
-        fields = ['name', 'description', 'price', 'meta_type', 'attribute_name', 'fabric_group_id', 'image_urls']
+        fields = ['name', 'description', 'price', 'meta_type', 'attribute_name', 'fabric_group_id']
         for field in fields:
             if field in node:
                 setattr(product, field, node[field])

@@ -1,7 +1,6 @@
 Flask
-Flask-SQLAlchemy
 Flask-Cors
+Flask-SQLAlchemy
 boto3
-requests
-psycopg2-binary
 python-dotenv
+werkzeug

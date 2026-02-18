@@ -44,7 +44,6 @@ def create_data():
         "name": "Notch",
         "parent_id": lapel_id,
         "description": "The most standard and versatile lapel works well for any occasion.",
-        "image_urls": "https://images.suitsupply.com/notch.jpg",
         "meta_type": "product"
     }).json()
     notch_id = notch['id']

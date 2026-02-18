@@ -47,7 +47,6 @@ class Product(db.Model):
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
     price = db.Column(db.Float, default=0.0)
-    image_urls = db.Column(db.String(500))
     
     # Hierarchy: Points to the ID of the parent product
     parent_id = db.Column(db.Integer, db.ForeignKey('products.id', ondelete='CASCADE'))
@@ -82,7 +81,6 @@ class Product(db.Model):
             "name": self.name,
             "description": self.description,
             "price": self.price,
-            "image_urls": self.image_urls,
             "parent_id": self.parent_id,
             "meta_type": self.meta_type,
             "attributes_list": self.attributes_list,
