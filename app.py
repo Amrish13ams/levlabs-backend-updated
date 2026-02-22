@@ -285,13 +285,15 @@ def update_product_tree():
         # Update fabric-specific images
         if 'fabric_images' in node and isinstance(node['fabric_images'], dict):
             for fab_id, img_url in node['fabric_images'].items():
+                pfi = ProductFabricImage.query.filter_by(product_id=product.id, fabric_id=int(fab_id)).first()
                 if img_url:
-                    pfi = ProductFabricImage.query.filter_by(product_id=product.id, fabric_id=int(fab_id)).first()
                     if pfi:
                         pfi.image_url = img_url
                     else:
                         pfi = ProductFabricImage(product_id=product.id, fabric_id=int(fab_id), image_url=img_url)
                         db.session.add(pfi)
+                elif pfi:
+                    db.session.delete(pfi)
 
         # Gather children from 'sub_products' and dynamic attribute keys
         children = []
